@@ -1,0 +1,53 @@
+# Core ML frameworks
+torch>=2.0.0
+torchvision>=0.15.0
+
+# MMDetection3D ecosystem (install manually - see ENV_SETUP.md)
+# mmcv>=2.0.0rc4,<2.2.0  # Install from wheel index: cu121/torch2.4
+# mmengine>=0.10.0
+# mmdet>=3.0.0  # Install from git: git+https://github.com/open-mmlab/mmdetection.git
+# mmdet3d>=1.1.0  # Install from git: git+https://github.com/open-mmlab/mmdetection3d.git
+
+# 3D point cloud processing
+open3d>=0.17.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Data processing
+pandas>=2.0.0
+h5py>=3.9.0
+tqdm>=4.65.0
+
+# Experiment tracking
+mlflow>=2.7.0
+
+# Monitoring & logging
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+
+# Visualization & dashboard
+streamlit>=1.28.0
+plotly>=5.17.0
+
+# Workflow orchestration
+prefect>=2.14.0
+
+# Testing
+pytest>=7.4.0
+pytest-benchmark>=4.0.0
+
+# OpenVINO (optional, for optimization)
+# openvino>=2023.3.0
+# onnx>=1.15.0
+# onnxruntime>=1.16.0
+
+# Dataset tools
+tensorflow>=2.13.0
+nuscenes-devkit>=1.1.0
+# waymo-open-dataset-tf>=2.6.0  # Optional, for Waymo
+
+# Utilities
+pyyaml>=6.0
+python-dotenv>=1.0.0
+tensorboard>=2.14.0
+psutil>=5.9.0

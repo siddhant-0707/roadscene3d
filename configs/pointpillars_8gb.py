@@ -1,0 +1,203 @@
+"""PointPillars configuration optimized for 8GB VRAM.
+
+This config uses:
+- Batch size 2 (can be adjusted)
+- Gradient accumulation (effective batch size 8)
+- Mixed precision training (FP16)
+- Optimized voxelization settings
+"""
+
+# Model configuration
+model = dict(
+    type='PointPillars',
+    voxel_layer=dict(
+        max_num_points=32,
+        point_cloud_range=[0, -40, -3, 70.4, 40, 1],  # Adjusted for Waymo
+        voxel_size=[0.05, 0.05, 0.1],  # Smaller voxels = more memory, adjust if needed
+        max_voxels=(16000, 40000)  # Reduced for 8GB VRAM
+    ),
+    voxel_encoder=dict(
+        type='PillarFeatureNet',
+        in_channels=4,
+        feat_channels=[64],
+        with_distance=False,
+        voxel_size=(0.05, 0.05, 0.1),
+        point_cloud_range=(0, -40, -3, 70.4, 40, 1),
+    ),
+    middle_encoder=dict(
+        type='PointPillarsScatter',
+        in_channels=64,
+        output_shape=(1600, 1408),
+    ),
+    backbone=dict(
+        type='SECOND',
+        in_channels=64,
+        layer_nums=[3, 5, 5],
+        layer_strides=[2, 2, 2],
+        out_channels=[64, 128, 256],
+    ),
+    neck=dict(
+        type='SECONDFPN',
+        in_channels=[64, 128, 256],
+        upsample_strides=[1, 2, 4],
+        out_channels=[128, 128, 128],
+    ),
+    bbox_head=dict(
+        type='Anchor3DHead',
+        num_classes=3,
+        in_channels=384,
+        feat_channels=384,
+        use_direction_classifier=True,
+        assign_per_class=True,
+        anchor_generator=dict(
+            type='AlignedAnchor3DRangeGenerator',
+            ranges=[[0, -40.0, -0.6, 70.4, 40.0, -0.6],
+                    [0, -40.0, -0.6, 70.4, 40.0, -0.6],
+                    [0, -40.0, -1.78, 70.4, 40.0, -1.78]],
+            sizes=[[0.8, 0.6, 1.73], [0.6, 0.6, 1.76], [0.6, 1.6, 1.73]],
+            rotations=[0, 1.57],
+            reshape_out=False),
+        diff_rad_by_sin=True,
+        bbox_coder=dict(type='DeltaXYZWLHRBBoxCoder'),
+        loss_cls=dict(
+            type='FocalLoss',
+            use_sigmoid=True,
+            gamma=2.0,
+            alpha=0.25,
+            loss_weight=1.0),
+        loss_bbox=dict(type='SmoothL1Loss', beta=1.0 / 9.0, loss_weight=2.0),
+        loss_dir=dict(
+            type='CrossEntropyLoss', use_sigmoid=False, loss_weight=0.2)),
+    # model training and testing settings
+    train_cfg=dict(
+        assigner=dict(
+            type='MaxIoUAssigner',
+            iou_calculator=dict(type='BboxOverlapsNearest3D'),
+            pos_iou_thr=0.6,
+            neg_iou_thr=0.45,
+            min_pos_iou=0.45,
+            ignore_iof_thr=-1),
+        allowed_border=0,
+        pos_weight=-1,
+        debug=False),
+    test_cfg=dict(
+        use_rotate_nms=True,
+        nms_across_levels=False,
+        nms_thr=0.01,
+        score_thr=0.1,
+        min_bbox_size=0,
+        nms_pre=1000,
+        max_num=500))
+
+# Training configuration
+train_batch_size = 2  # Reduced for 8GB VRAM
+gradient_accumulation_steps = 4  # Effective batch size = 2 * 4 = 8
+use_amp = True  # Mixed precision training (required for 8GB VRAM)
+
+# Dataset configuration
+dataset_type = 'WaymoDataset'
+data_root = 'data/waymo/'
+ann_file_train = 'data/processed/train_annotations.json'
+ann_file_val = 'data/processed/val_annotations.json'
+
+# Data pipeline
+train_pipeline = [
+    dict(type='LoadPointsFromFile', coord_type='LIDAR', load_dim=4, use_dim=4),
+    dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
+    dict(
+        type='ObjectSample',
+        db_sampler=dict(
+            data_root=data_root,
+            info_path=data_root + 'dbinfos_train.pkl',
+            rate=1.0,
+            prepare=dict(
+                filter_by_difficulty=[-1],
+                filter_by_min_points=dict(vehicle=5, pedestrian=5, cyclist=5)),
+            classes=['vehicle', 'pedestrian', 'cyclist'],
+            sample_groups=dict(vehicle=15, pedestrian=15, cyclist=15))),
+    dict(type='RandomFlip3D', flip_ratio_bev_horizontal=0.5),
+    dict(
+        type='GlobalRotScaleTrans',
+        rot_range=[-0.78539816, 0.78539816],
+        scale_ratio_range=[0.95, 1.05],
+        translation_std=[0.2, 0.2, 0.2]),
+    dict(type='PointsRangeFilter', point_cloud_range=[0, -40, -3, 70.4, 40, 1]),
+    dict(type='ObjectRangeFilter', point_cloud_range=[0, -40, -3, 70.4, 40, 1]),
+    dict(type='PointShuffle'),
+    dict(type='DefaultFormatBundle3D', class_names=['vehicle', 'pedestrian', 'cyclist']),
+    dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d'])
+]
+
+test_pipeline = [
+    dict(type='LoadPointsFromFile', coord_type='LIDAR', load_dim=4, use_dim=4),
+    dict(
+        type='MultiScaleFlipAug3D',
+        img_scale=(1333, 800),
+        pts_scale_ratio=1,
+        flip=False,
+        transforms=[
+            dict(type='GlobalRotScaleTrans', rot_range=[0, 0], scale_ratio_range=[1., 1.],
+                 translation_std=[0, 0, 0]),
+            dict(type='RandomFlip3D'),
+            dict(type='PointsRangeFilter', point_cloud_range=[0, -40, -3, 70.4, 40, 1]),
+            dict(type='DefaultFormatBundle3D', class_names=['vehicle', 'pedestrian', 'cyclist']),
+            dict(type='Collect3D', keys=['points'])
+        ])
+]
+
+# Data loaders
+data = dict(
+    samples_per_gpu=train_batch_size,
+    workers_per_gpu=4,  # Reduced to save RAM
+    train=dict(
+        type=dataset_type,
+        data_root=data_root,
+        ann_file=ann_file_train,
+        pipeline=train_pipeline,
+        modality=dict(use_lidar=True, use_camera=False),
+        classes=['vehicle', 'pedestrian', 'cyclist'],
+        test_mode=False,
+        box_type_3d='LiDAR'),
+    val=dict(
+        type=dataset_type,
+        data_root=data_root,
+        ann_file=ann_file_val,
+        pipeline=test_pipeline,
+        modality=dict(use_lidar=True, use_camera=False),
+        classes=['vehicle', 'pedestrian', 'cyclist'],
+        test_mode=True,
+        box_type_3d='LiDAR'),
+    test=dict(
+        type=dataset_type,
+        data_root=data_root,
+        ann_file=ann_file_val,
+        pipeline=test_pipeline,
+        modality=dict(use_lidar=True, use_camera=False),
+        classes=['vehicle', 'pedestrian', 'cyclist'],
+        test_mode=True,
+        box_type_3d='LiDAR'))
+
+# Optimizer
+optimizer = dict(type='AdamW', lr=0.001, weight_decay=0.01)
+optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
+
+# Learning rate
+lr_config = dict(
+    policy='cyclic',
+    target_ratio=(10, 1e-4),
+    cyclic_times=1,
+    step_ratio_up=0.4)
+
+# Runtime settings
+runner = dict(type='EpochBasedRunner', max_epochs=80)
+checkpoint_config = dict(interval=5)
+log_config = dict(
+    interval=50,
+    hooks=[
+        dict(type='TextLoggerHook'),
+        dict(type='TensorboardLoggerHook'),
+        dict(type='MLflowLoggerHook')
+    ])
+
+# Evaluation
+evaluation = dict(interval=5, metric='mAP')
