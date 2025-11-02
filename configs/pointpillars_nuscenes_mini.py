@@ -10,27 +10,38 @@ _base_ = [
 # Override data root for mini dataset
 data_root = 'data/nuscenes/v1.0-mini/'
 
+# Add version to metainfo for mini dataset
+metainfo = dict(
+    classes=['car', 'truck', 'trailer', 'bus', 'construction_vehicle',
+             'bicycle', 'motorcycle', 'pedestrian', 'traffic_cone', 'barrier'],
+    version='v1.0-mini')
+
 # Reduce batch size for 8GB VRAM
 train_dataloader = dict(
     batch_size=1,  # Further reduced to 1 for 8GB VRAM
     num_workers=2,  # Reduced workers to save RAM
     dataset=dict(
         data_root=data_root,
-        ann_file='nuscenes_infos_train.pkl'))  # Relative to data_root
+        ann_file='nuscenes_infos_train.pkl',
+        metainfo=metainfo))  # Add metainfo with version
 
 val_dataloader = dict(
     batch_size=1,
     num_workers=1,  # Reduced workers
     dataset=dict(
         data_root=data_root,
-        ann_file='nuscenes_infos_val.pkl'))  # Relative to data_root
+        ann_file='nuscenes_infos_val.pkl',
+        metainfo=metainfo))  # Add metainfo with version
 
 test_dataloader = val_dataloader
 
-# Update evaluator with correct paths
+# Update evaluator with correct paths and version for mini dataset
 val_evaluator = dict(
+    type='NuScenesMetric',
     data_root=data_root,
-    ann_file=data_root + 'nuscenes_infos_val.pkl')  # Full path for evaluator
+    ann_file=data_root + 'nuscenes_infos_val.pkl',
+    metric='bbox',
+    jsonfile_prefix='./work_dirs/nuscenes_mini_results')
 test_evaluator = val_evaluator
 
 # Shorter training for mini dataset (40 epochs instead of default 24)
