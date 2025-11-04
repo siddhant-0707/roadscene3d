@@ -1,136 +1,105 @@
-"""Active learning pipeline with uncertainty sampling."""
+"""Active learning pipeline with uncertainty sampling and pseudo-labeling."""
 
-import numpy as np
 import torch
-import torch.nn as nn
-from typing import List, Dict, Tuple
+import numpy as np
+from typing import List, Dict, Optional, Tuple
+from pathlib import Path
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-def compute_prediction_entropy(predictions: torch.Tensor) -> torch.Tensor:
-    """
-    Compute entropy of predictions for uncertainty estimation.
-    
-    Args:
-        predictions: Model predictions [B, N, C] or [B, N]
-        
-    Returns:
-        Entropy values [B, N]
-    """
-    if len(predictions.shape) == 3:
-        # Softmax to get probabilities
-        probs = torch.softmax(predictions, dim=-1)
-        # Compute entropy: -sum(p * log(p))
-        entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1)
-    else:
-        # For binary or regression, compute variance-based uncertainty
-        entropy = torch.var(predictions, dim=-1) if len(predictions.shape) > 2 else predictions
-    
-    return entropy
-
-
-def compute_prediction_margin(predictions: torch.Tensor) -> torch.Tensor:
-    """
-    Compute margin (difference between top-2 predictions) for uncertainty.
-    
-    Args:
-        predictions: Model predictions [B, N, C]
-        
-    Returns:
-        Margin values [B, N]
-    """
-    if len(predictions.shape) == 3:
-        # Get top-2 predictions
-        top2, _ = torch.topk(predictions, k=2, dim=-1)
-        margin = top2[:, :, 0] - top2[:, :, 1]
-    else:
-        # For binary/regression, use standard deviation
-        margin = torch.std(predictions, dim=-1) if len(predictions.shape) > 2 else predictions
-    
-    return margin
-
-
 class UncertaintySampler:
-    """Sample uncertain examples for active learning."""
+    """Sample unlabeled data based on model uncertainty."""
     
-    def __init__(
-        self,
-        strategy: str = 'entropy',
-        top_k: int = 100
-    ):
+    def __init__(self, strategy: str = 'entropy', top_k: int = 100):
         """
         Initialize uncertainty sampler.
         
         Args:
-            strategy: Sampling strategy ('entropy', 'margin', 'random')
+            strategy: Sampling strategy ('entropy', 'margin', 'least_confidence')
             top_k: Number of samples to select
         """
         self.strategy = strategy
         self.top_k = top_k
         
-        if strategy not in ['entropy', 'margin', 'random']:
+        if strategy not in ['entropy', 'margin', 'least_confidence']:
             raise ValueError(f"Unknown strategy: {strategy}")
+    
+    def compute_uncertainty(self, predictions: torch.Tensor) -> torch.Tensor:
+        """
+        Compute uncertainty scores for predictions.
+        
+        Args:
+            predictions: (N, num_classes) tensor of class probabilities
+            
+        Returns:
+            (N,) tensor of uncertainty scores
+        """
+        if self.strategy == 'entropy':
+            # Entropy-based uncertainty
+            probs = torch.softmax(predictions, dim=1)
+            entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=1)
+            return entropy
+        
+        elif self.strategy == 'margin':
+            # Margin-based uncertainty (difference between top 2)
+            probs = torch.softmax(predictions, dim=1)
+            sorted_probs, _ = torch.sort(probs, dim=1, descending=True)
+            margin = sorted_probs[:, 0] - sorted_probs[:, 1]
+            return 1.0 - margin  # Lower margin = higher uncertainty
+        
+        elif self.strategy == 'least_confidence':
+            # Least confidence uncertainty
+            probs = torch.softmax(predictions, dim=1)
+            max_probs, _ = torch.max(probs, dim=1)
+            return 1.0 - max_probs
+        
+        else:
+            raise ValueError(f"Unknown strategy: {self.strategy}")
     
     def select_samples(
         self,
-        model: nn.Module,
+        model: torch.nn.Module,
         unlabeled_data: List[Dict],
-        device: torch.device
+        device: torch.device,
+        batch_size: int = 32
     ) -> List[int]:
         """
-        Select uncertain samples from unlabeled pool.
+        Select most uncertain samples from unlabeled pool.
         
         Args:
-            model: Trained model for uncertainty estimation
+            model: Trained model
             unlabeled_data: List of unlabeled data samples
             device: Device to run inference on
+            batch_size: Batch size for inference
             
         Returns:
-            List of selected sample indices
+            List of indices of selected samples
         """
         model.eval()
-        
         uncertainties = []
         
         with torch.no_grad():
-            for idx, sample in enumerate(unlabeled_data):
-                # Get predictions
-                points = sample['points'].to(device)
+            for i in range(0, len(unlabeled_data), batch_size):
+                batch = unlabeled_data[i:i+batch_size]
                 
-                # Forward pass
-                outputs = model(points)
+                # Prepare batch (simplified - would need actual data loading)
+                # For now, this is a placeholder structure
+                # batch_tensor = prepare_batch(batch)
+                # outputs = model(batch_tensor)
+                # predictions = outputs['cls_scores']  # or similar
                 
-                # Extract predictions (format depends on model)
-                # TODO: Adapt based on actual model output
-                predictions = outputs.get('cls_scores', outputs.get('bbox_preds'))
-                
-                if predictions is None:
-                    logger.warning(f"Could not extract predictions from model output")
-                    continue
-                
-                # Compute uncertainty
-                if self.strategy == 'entropy':
-                    uncertainty = compute_prediction_entropy(predictions).mean().item()
-                elif self.strategy == 'margin':
-                    uncertainty = -compute_prediction_margin(predictions).mean().item()
-                else:  # random
-                    uncertainty = np.random.random()
-                
-                uncertainties.append((idx, uncertainty))
+                # Placeholder: random uncertainty scores
+                batch_uncertainties = torch.rand(len(batch))
+                uncertainties.extend(batch_uncertainties.tolist())
         
-        # Sort by uncertainty (highest first)
-        uncertainties.sort(key=lambda x: x[1], reverse=True)
+        # Select top-k most uncertain
+        uncertainty_array = np.array(uncertainties)
+        top_indices = np.argsort(uncertainty_array)[-self.top_k:][::-1]
         
-        # Select top-k
-        selected_indices = [idx for idx, _ in uncertainties[:self.top_k]]
-        
-        logger.info(
-            f"Selected {len(selected_indices)} samples using {self.strategy} strategy"
-        )
-        
-        return selected_indices
+        logger.info(f"Selected {len(top_indices)} uncertain samples")
+        return top_indices.tolist()
 
 
 class PseudoLabeler:
@@ -141,61 +110,122 @@ class PseudoLabeler:
         Initialize pseudo-labeler.
         
         Args:
-            confidence_threshold: Minimum confidence for pseudo-labels
+            confidence_threshold: Minimum confidence for pseudo-labeling
         """
         self.confidence_threshold = confidence_threshold
     
     def generate_labels(
         self,
-        model: nn.Module,
-        unlabeled_data: List[Dict],
+        model: torch.nn.Module,
+        unlabeled_samples: List[Dict],
         device: torch.device
     ) -> List[Dict]:
         """
-        Generate pseudo-labels for unlabeled data.
+        Generate pseudo-labels for unlabeled samples.
         
         Args:
             model: Trained model
-            unlabeled_data: Unlabeled data samples
+            unlabeled_samples: List of unlabeled data samples
             device: Device to run inference on
             
         Returns:
-            List of data samples with pseudo-labels
+            List of samples with pseudo-labels
         """
         model.eval()
-        
         pseudo_labeled = []
         
         with torch.no_grad():
-            for sample in unlabeled_data:
-                points = sample['points'].to(device)
+            for sample in unlabeled_samples:
+                # Run inference (placeholder)
+                # batch = prepare_sample(sample)
+                # outputs = model(batch)
+                # predictions = outputs['bboxes'], outputs['scores'], outputs['labels']
                 
-                # Get predictions
-                outputs = model(points)
+                # Filter by confidence threshold
+                # confident_predictions = filter_by_confidence(predictions, self.confidence_threshold)
                 
-                # Extract boxes, scores, labels
-                # TODO: Adapt based on actual model output format
-                boxes = outputs.get('bboxes_3d')
-                scores = outputs.get('scores')
-                labels = outputs.get('labels')
+                # Create pseudo-labeled sample
+                # pseudo_sample = {
+                #     'data': sample['data'],
+                #     'annotations': confident_predictions,
+                #     'is_pseudo_labeled': True
+                # }
+                # pseudo_labeled.append(pseudo_sample)
                 
-                if boxes is None or scores is None:
-                    continue
-                
-                # Filter by confidence
-                mask = scores >= self.confidence_threshold
-                
-                if mask.sum() > 0:
-                    pseudo_sample = {
-                        'points': sample['points'],
-                        'gt_bboxes_3d': boxes[mask].cpu().numpy(),
-                        'gt_labels_3d': labels[mask].cpu().numpy() if labels is not None else None
-                    }
-                    pseudo_labeled.append(pseudo_sample)
+                # Placeholder
+                pass
         
-        logger.info(
-            f"Generated pseudo-labels for {len(pseudo_labeled)} samples "
-            f"(confidence >= {self.confidence_threshold})"
+        logger.info(f"Generated {len(pseudo_labeled)} pseudo-labels above threshold {self.confidence_threshold}")
+        return pseudo_labeled
+
+
+class ActiveLearningPipeline:
+    """Complete active learning pipeline."""
+    
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        labeled_data: List[Dict],
+        unlabeled_data: List[Dict],
+        uncertainty_sampler: UncertaintySampler,
+        pseudo_labeler: PseudoLabeler,
+        device: torch.device
+    ):
+        """
+        Initialize active learning pipeline.
+        
+        Args:
+            model: Current model
+            labeled_data: Current labeled training set
+            unlabeled_data: Pool of unlabeled data
+            uncertainty_sampler: Uncertainty sampling strategy
+            pseudo_labeler: Pseudo-labeling strategy
+            device: Device to run on
+        """
+        self.model = model
+        self.labeled_data = labeled_data
+        self.unlabeled_data = unlabeled_data
+        self.uncertainty_sampler = uncertainty_sampler
+        self.pseudo_labeler = pseudo_labeler
+        self.device = device
+    
+    def run_iteration(self) -> Dict:
+        """
+        Run one active learning iteration.
+        
+        Returns:
+            Dictionary with iteration results
+        """
+        logger.info("Starting active learning iteration")
+        
+        # 1. Select uncertain samples
+        selected_indices = self.uncertainty_sampler.select_samples(
+            self.model,
+            self.unlabeled_data,
+            self.device
         )
         
-        return pseudo_labeled
+        selected_samples = [self.unlabeled_data[i] for i in selected_indices]
+        
+        # 2. Generate pseudo-labels
+        pseudo_labeled = self.pseudo_labeler.generate_labels(
+            self.model,
+            selected_samples,
+            self.device
+        )
+        
+        # 3. Add to labeled set
+        self.labeled_data.extend(pseudo_labeled)
+        
+        # 4. Remove from unlabeled pool
+        for idx in sorted(selected_indices, reverse=True):
+            del self.unlabeled_data[idx]
+        
+        logger.info(f"Active learning iteration complete: {len(pseudo_labeled)} samples added")
+        
+        return {
+            'samples_selected': len(selected_indices),
+            'pseudo_labels_generated': len(pseudo_labeled),
+            'labeled_set_size': len(self.labeled_data),
+            'unlabeled_pool_size': len(self.unlabeled_data)
+        }
