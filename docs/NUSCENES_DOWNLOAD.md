@@ -73,26 +73,3 @@ print(f'   Samples: {len(nusc.sample)}')
 print(f'   Annotations: {len(nusc.sample_annotation)}')
 "
 ```
-
-Expected output:
-- Scenes: 10
-- Samples: ~4,000
-- Annotations: Many thousands
-
-## Total Download Size
-
-- **Minimum**: 3.88 GB (just mini dataset)
-- **Recommended**: ~4.25 GB (mini + maps)
-
-Much smaller than Waymo's 70-140 GB! 🎉
-
-## Next Steps
-
-After download and verification:
-
-1. ✅ Dataset is ready
-2. Update data loader configuration for nuScenes
-3. Start training setup
-4. Begin pipeline development
-
-See [QUICKSTART.md](QUICKSTART.md) for next steps.
